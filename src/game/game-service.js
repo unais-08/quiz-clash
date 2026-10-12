@@ -34,6 +34,8 @@ export function safeRoom(room) {
     answersReceived: room.status === 'playing' ? Object.keys(room.submissions).length : 0,
     lastRound: room.lastRound,
     winner: room.winner,
+    endReason: room.endReason,
+    endedBy: room.endedBy,
     serverNow: Date.now()
   };
 }
@@ -59,6 +61,19 @@ function closeRoom(room) {
   clearTimeout(room.timer);
   rooms.delete(room.code);
 }
+function finishEarly(room, departedPlayer) {
+  if (room.status === 'finished') return;
+  clearTimeout(room.timer);
+  room.status = 'finished';
+  room.deadline = null;
+  room.endReason = 'playerLeft';
+  room.endedBy = departedPlayer.name;
+  const players = [...room.players.values()];
+  const highScore = Math.max(0, ...players.map(player => player.score));
+  room.winner = players.filter(player => player.score === highScore).map(player => player.name);
+  broadcast(room);
+  arm(room, () => closeRoom(room), 60 * 60_000);
+}
 
 function arm(room, fn, ms) {
   clearTimeout(room.timer);
@@ -83,24 +98,37 @@ function finishQuestion(room) {
   if (room.status !== 'playing') return;
   clearTimeout(room.timer);
   const q = room.questions[room.questionIndex];
-  for (const [id, s] of Object.entries(room.submissions)) {
-    const p = room.players.get(id);
-    if (p) {
-      const earned = scoreAnswer(s.answer === q.correct, s.at - room.questionStarted);
-      p.score += earned;
-      p.roundScore += earned;
+  const outcomes = new Map();
+  for (const [id, submission] of Object.entries(room.submissions)) {
+    const player = room.players.get(id);
+    if (player) {
+      const correct = Number.isInteger(submission.answer) && Number.isInteger(q.correct) && submission.answer === q.correct;
+      const pointsEarned = scoreAnswer(correct, submission.at - room.questionStarted);
+      player.score += pointsEarned;
+      player.roundScore += pointsEarned;
+      outcomes.set(id, {
+        answerIndex: submission.answer,
+        correct,
+        pointsEarned
+      });
     }
   }
   room.lastRound = {
     round: room.round,
     question: room.questionIndex % ROUND_SIZE + 1,
+    questionText: q.question,
+    category: q.category,
+    answers: q.answers,
     correctAnswer: q.correct,
-    players: [...room.players.values()].map(p => ({
-      id: p.id,
-      name: p.name,
-      score: p.score,
-      roundScore: p.roundScore,
-      answered: Object.hasOwn(room.submissions, p.id)
+    players: [...room.players.values()].map(player => ({
+      id: player.id,
+      name: player.name,
+      score: player.score,
+      roundScore: player.roundScore,
+      answered: outcomes.has(player.id),
+      answerIndex: outcomes.get(player.id)?.answerIndex ?? null,
+      correct: outcomes.get(player.id)?.correct ?? false,
+      pointsEarned: outcomes.get(player.id)?.pointsEarned ?? 0
     }))
   };
   const roundEnded = (room.questionIndex + 1) % ROUND_SIZE === 0,
@@ -124,7 +152,7 @@ function finishQuestion(room) {
     room.status = 'questionResults';
     room.deadline = null;
     broadcast(room);
-    arm(room, () => beginQuestion(room), 2500);
+    arm(room, () => beginQuestion(room), 5000);
   }
 }
 
@@ -185,6 +213,13 @@ function handle(room, client, msg) {
     beginQuestion(room);
     return;
   }
+  if (data.type === 'leave') {
+    if (room.status === 'finished') return;
+    player.connected = false;
+    client.left = true;
+    finishEarly(room, player);
+    return;
+  }
   if (data.type === 'answer') {
     if (room.status !== 'playing') return sendError(client, 'That question is already closed.');
     if (Date.now() > room.deadline) return sendError(client, 'Time is up.');
@@ -211,6 +246,8 @@ function handle(room, client, msg) {
     room.submissions = {};
     room.lastRound = null;
     room.winner = null;
+    room.endReason = null;
+    room.endedBy = null;
     for (const p of room.players.values()) {
       p.score = 0;
       p.roundScore = 0;
@@ -242,6 +279,8 @@ export function createRoom() {
     deadline: null,
     lastRound: null,
     winner: null,
+    endReason: null,
+    endedBy: null,
     timer: null,
     lastActivity: Date.now()
   };
@@ -265,11 +304,19 @@ export function receiveMessage(client, data) {
 }
 
 export function disconnectClient(client) {
-  if (!client.room) return;
-  const player = client.room.players.get(client.playerId);
-  if (player) player.connected = false;
-  client.room.clients.delete(client);
-  broadcast(client.room);
+  const room = client.room;
+  if (!room) return;
+  room.clients.delete(client);
+  const player = room.players.get(client.playerId);
+  if (!player) return;
+  const stillConnected = [...room.clients].some(peer => peer.open && peer.playerId === player.id);
+  if (stillConnected) return;
+  player.connected = false;
+  if (room.status !== 'finished' && room.status !== 'lobby') {
+    finishEarly(room, player);
+    return;
+  }
+  broadcast(room);
 }
 
 export function cleanupExpiredRooms() {
@@ -277,4 +324,3 @@ export function cleanupExpiredRooms() {
     if (Date.now() - room.lastActivity > 4 * 60 * 60_000) closeRoom(room);
   }
 }
-
