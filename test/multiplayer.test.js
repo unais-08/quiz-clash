@@ -27,7 +27,7 @@ test('two clients share a question, lock answers, and receive one authoritative 
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address(), base = `http://127.0.0.1:${port}`;
-  let a, b;
+  let a, b, reconnecting;
   try {
     const response = await fetch(`${base}/api/rooms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Host' }) });
     assert.equal(response.status, 201);
@@ -80,12 +80,23 @@ test('two clients share a question, lock answers, and receive one authoritative 
     assert.equal(incorrectOutcome.score, 0);
     assert.deepEqual(resultA.state.players.map(({ id, score }) => ({ id, score })), resultB.state.players.map(({ id, score }) => ({ id, score })));
 
+    const originalHostSocket = a;
+    reconnecting = makeClient(`ws://127.0.0.1:${port}/ws`); await reconnecting.open();
+    reconnecting.send({ type: 'joinRoom', code, name: 'Host', playerId: aId });
+    const resumed = await reconnecting.waitFor(m => m.type === 'state' && m.state.status === 'questionResults');
+    assert.deepEqual(resumed.state.lastRound, resultA.state.lastRound);
+    originalHostSocket.close();
+    a = reconnecting;
+    reconnecting = null;
+
+    const playedQuestions = [gameA.state.question.question];
     for (let questionIndex = 1; questionIndex < 15; questionIndex++) {
       const [playingA, playingB] = await Promise.all([
         a.waitFor(m => m.type === 'state' && m.state.status === 'playing' && m.state.questionIndex === questionIndex),
         b.waitFor(m => m.type === 'state' && m.state.status === 'playing' && m.state.questionIndex === questionIndex)
       ]);
       assert.deepEqual(playingA.state.question, playingB.state.question);
+      playedQuestions.push(playingA.state.question.question);
       const correctIndexForQuestion = QUESTIONS.find(q => q.question === playingA.state.question.question).correct;
       const hostCorrect = questionIndex !== 1;
       a.send({ type: 'answer', answer: hostCorrect ? correctIndexForQuestion : (correctIndexForQuestion + 1) % 4 });
@@ -110,10 +121,13 @@ test('two clients share a question, lock answers, and receive one authoritative 
       b.waitFor(m => m.type === 'state' && m.state.status === 'finished')
     ]);
     assert.deepEqual(finalA.state.players.map(({ id, score }) => ({ id, score })), finalB.state.players.map(({ id, score }) => ({ id, score })));
+    assert.equal(playedQuestions.length, 15);
+    assert.equal(new Set(playedQuestions).size, 15);
+    assert.ok(playedQuestions.every(question => QUESTIONS.some(item => item.question === question)));
     assert.ok(finalA.state.winner.length >= 1);
     assert.equal(finalA.state.endReason, null);
   } finally {
-    a?.close(); b?.close();
+    a?.close(); b?.close(); reconnecting?.close();
     await new Promise(resolve => server.close(resolve));
   }
 });

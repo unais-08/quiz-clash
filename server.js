@@ -11,7 +11,7 @@ import { createHttpServer } from './src/network/http-server.js';
 import { attachWebSocketServer } from './src/network/websocket-server.js';
 
 export { QUESTIONS } from './src/game/questions.js';
-export { scoreAnswer } from './src/game/game-service.js';
+export { scoreAnswer, selectQuestions } from './src/game/game-service.js';
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 3000);

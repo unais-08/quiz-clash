@@ -103,3 +103,9 @@ $('#create').addEventListener('click', createRoom); $('#join').addEventListener(
 $('#leave-confirm-cancel').addEventListener('click', () => $('#leave-confirm').close());
 $('#leave-confirm-x').addEventListener('click', () => $('#leave-confirm').close());
 $('#leave-confirm-yes').addEventListener('click', leaveMatch);
+
+window.addEventListener('beforeunload', event => {
+  if (!state || !['playing', 'questionResults', 'roundResults'].includes(state.status)) return;
+  event.preventDefault();
+  event.returnValue = '';
+});

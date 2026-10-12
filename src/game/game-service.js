@@ -5,6 +5,17 @@ const rooms = new Map();
 const QUESTION_MS = 15_000;
 const ROUND_SIZE = 5;
 const ROUNDS = 3;
+export function selectQuestions(pool = QUESTIONS, count = ROUNDS * ROUND_SIZE, random = Math.random) {
+  if (!Number.isInteger(count) || count < 1 || pool.length < count) {
+    throw new RangeError(`Cannot select ${count} unique questions from a pool of ${pool.length}.`);
+  }
+  const shuffled = [...pool];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled.slice(0, count);
+}
 export function scoreAnswer(correct, elapsedMs) {
   return correct ? 100 + (elapsedMs <= 5000 ? 50 : 0) : 0;
 }
@@ -207,7 +218,7 @@ function handle(room, client, msg) {
     if (player.id !== room.hostId) return sendError(client, 'Only the host can start the game.');
     if (room.status !== 'lobby') return sendError(client, 'The game has already started.');
     if (room.players.size < 2) return sendError(client, 'You need at least 2 players to start.');
-    room.questions = [...QUESTIONS].sort(() => Math.random() - .5).slice(0, ROUNDS * ROUND_SIZE);
+    room.questions = selectQuestions();
     room.round = 1;
     room.questionIndex = -1;
     beginQuestion(room);
